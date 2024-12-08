@@ -112,11 +112,12 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	chairLocationID := ulid.Make().String()
-	if _, err := tx.ExecContext(
+	_, err = tx.ExecContext(
 		ctx,
-		`INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (?, ?, ?, ?)`,
-		chairLocationID, chair.ID, req.Latitude, req.Longitude,
-	); err != nil {
+		`INSERT INTO chair_locations (id, chair_id, location) VALUES (?, ?, ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'), 4326))`,
+		chairLocationID, chair.ID, req.Longitude, req.Latitude,
+	)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -140,14 +141,14 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if status != "COMPLETED" && status != "CANCELED" {
-			if req.Latitude == ride.PickupLatitude && req.Longitude == ride.PickupLongitude && status == "ENROUTE" {
+			if req.Latitude == ride.PickupLocation.Lat && req.Longitude == ride.PickupLocation.Lon && status == "ENROUTE" {
 				if _, err := tx.ExecContext(ctx, "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)", ulid.Make().String(), ride.ID, "PICKUP"); err != nil {
 					writeError(w, http.StatusInternalServerError, err)
 					return
 				}
 			}
 
-			if req.Latitude == ride.DestinationLatitude && req.Longitude == ride.DestinationLongitude && status == "CARRYING" {
+			if req.Latitude == ride.DestinationLocation.Lat && req.Longitude == ride.DestinationLocation.Lon && status == "CARRYING" {
 				if _, err := tx.ExecContext(ctx, "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)", ulid.Make().String(), ride.ID, "ARRIVED"); err != nil {
 					writeError(w, http.StatusInternalServerError, err)
 					return
@@ -252,12 +253,12 @@ func chairGetNotification(w http.ResponseWriter, r *http.Request) {
 				Name: fmt.Sprintf("%s %s", user.Firstname, user.Lastname),
 			},
 			PickupCoordinate: Coordinate{
-				Latitude:  ride.PickupLatitude,
-				Longitude: ride.PickupLongitude,
+				Latitude:  ride.PickupLocation.Lat,
+				Longitude: ride.PickupLocation.Lon,
 			},
 			DestinationCoordinate: Coordinate{
-				Latitude:  ride.DestinationLatitude,
-				Longitude: ride.DestinationLongitude,
+				Latitude:  ride.DestinationLocation.Lat,
+				Longitude: ride.DestinationLocation.Lon,
 			},
 			Status: status,
 		},

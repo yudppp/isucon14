@@ -41,8 +41,7 @@ CREATE TABLE chair_locations
 (
   id         VARCHAR(26) NOT NULL,
   chair_id   VARCHAR(26) NOT NULL COMMENT '椅子ID',
-  latitude   INTEGER     NOT NULL COMMENT '経度',
-  longitude  INTEGER     NOT NULL COMMENT '緯度',
+  location   POINT       NOT NULL COMMENT '現在位置(経度 経度,緯度)',
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '登録日時',
   PRIMARY KEY (id)
 )
@@ -83,10 +82,8 @@ CREATE TABLE rides
   id                    VARCHAR(26) NOT NULL COMMENT 'ライドID',
   user_id               VARCHAR(26) NOT NULL COMMENT 'ユーザーID',
   chair_id              VARCHAR(26) NULL     COMMENT '割り当てられた椅子ID',
-  pickup_latitude       INTEGER     NOT NULL COMMENT '配車位置(経度)',
-  pickup_longitude      INTEGER     NOT NULL COMMENT '配車位置(緯度)',
-  destination_latitude  INTEGER     NOT NULL COMMENT '目的地(経度)',
-  destination_longitude INTEGER     NOT NULL COMMENT '目的地(緯度)',
+  pickup_location       POINT       NOT NULL COMMENT '配車位置(経度 緯度)',
+  destination_location  POINT       NOT NULL COMMENT '目的地(経度 緯度)',
   evaluation            INTEGER     NULL     COMMENT '評価',
   created_at            DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '要求日時',
   updated_at            DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '状態更新日時',

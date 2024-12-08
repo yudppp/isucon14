@@ -322,7 +322,8 @@ func appGetRides(w http.ResponseWriter, r *http.Request) {
 	// 最後にループしてレスポンス生成
 	items := []getAppRidesResponseItem{}
 	for _, ride := range rideMap {
-		fare, err := calculateDiscountedFare(ctx, tx, user.ID, &ride, ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
+		fare, err := calculateDiscountedFare(ctx, tx, user.ID, &ride, ride.PickupLocation.Lat, ride.PickupLocation.Lon, ride.DestinationLocation.Lat, ride.DestinationLocation.Lon)
+
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -333,8 +334,8 @@ func appGetRides(w http.ResponseWriter, r *http.Request) {
 
 		item := getAppRidesResponseItem{
 			ID:                    ride.ID,
-			PickupCoordinate:      Coordinate{Latitude: ride.PickupLatitude, Longitude: ride.PickupLongitude},
-			DestinationCoordinate: Coordinate{Latitude: ride.DestinationLatitude, Longitude: ride.DestinationLongitude},
+			PickupCoordinate:      Coordinate{Latitude: ride.PickupLocation.Lat, Longitude: ride.PickupLocation.Lon},
+			DestinationCoordinate: Coordinate{Latitude: ride.DestinationLocation.Lat, Longitude: ride.DestinationLocation.Lon},
 			Fare:                  fare,
 			Evaluation:            *ride.Evaluation,
 			RequestedAt:           ride.CreatedAt.UnixMilli(),
@@ -457,13 +458,15 @@ func appPostRides(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, errors.New("ride already exists"))
 		return
 	}
-
-	if _, err := tx.ExecContext(
+	_, err = tx.ExecContext(
 		ctx,
-		`INSERT INTO rides (id, user_id, pickup_latitude, pickup_longitude, destination_latitude, destination_longitude)
-				  VALUES (?, ?, ?, ?, ?, ?)`,
-		rideID, user.ID, req.PickupCoordinate.Latitude, req.PickupCoordinate.Longitude, req.DestinationCoordinate.Latitude, req.DestinationCoordinate.Longitude,
-	); err != nil {
+		`INSERT INTO rides (id, user_id, pickup_location, destination_location)
+		  VALUES (?, ?, ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'), 4326), ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'), 4326))`,
+		rideID, user.ID,
+		req.PickupCoordinate.Longitude, req.PickupCoordinate.Latitude,
+		req.DestinationCoordinate.Longitude, req.DestinationCoordinate.Latitude,
+	)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -712,7 +715,7 @@ func appPostRideEvaluatation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fare, err := calculateDiscountedFare(ctx, tx, ride.UserID, ride, ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
+	fare, err := calculateDiscountedFare(ctx, tx, ride.UserID, ride, ride.PickupLocation.Lat, ride.PickupLocation.Lon, ride.DestinationLocation.Lat, ride.DestinationLocation.Lon)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -820,7 +823,7 @@ func appGetNotification(w http.ResponseWriter, r *http.Request) {
 		status = yetSentRideStatus.Status
 	}
 
-	fare, err := calculateDiscountedFare(ctx, tx, user.ID, ride, ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
+	fare, err := calculateDiscountedFare(ctx, tx, user.ID, ride, ride.PickupLocation.Lat, ride.PickupLocation.Lon, ride.DestinationLocation.Lat, ride.DestinationLocation.Lon)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -830,12 +833,12 @@ func appGetNotification(w http.ResponseWriter, r *http.Request) {
 		Data: &appGetNotificationResponseData{
 			RideID: ride.ID,
 			PickupCoordinate: Coordinate{
-				Latitude:  ride.PickupLatitude,
-				Longitude: ride.PickupLongitude,
+				Latitude:  ride.PickupLocation.Lat,
+				Longitude: ride.PickupLocation.Lon,
 			},
 			DestinationCoordinate: Coordinate{
-				Latitude:  ride.DestinationLatitude,
-				Longitude: ride.DestinationLongitude,
+				Latitude:  ride.DestinationLocation.Lat,
+				Longitude: ride.DestinationLocation.Lon,
 			},
 			Fare:      fare,
 			Status:    status,
@@ -1053,14 +1056,14 @@ func appGetNearbyChairs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if calculateDistance(coordinate.Latitude, coordinate.Longitude, chairLocation.Latitude, chairLocation.Longitude) <= distance {
+		if calculateDistance(coordinate.Latitude, coordinate.Longitude, chairLocation.Location.Lat, chairLocation.Location.Lon) <= distance {
 			nearbyChairs = append(nearbyChairs, appGetNearbyChairsResponseChair{
 				ID:    chair.ID,
 				Name:  chair.Name,
 				Model: chair.Model,
 				CurrentCoordinate: Coordinate{
-					Latitude:  chairLocation.Latitude,
-					Longitude: chairLocation.Longitude,
+					Latitude:  chairLocation.Location.Lat,
+					Longitude: chairLocation.Location.Lon,
 				},
 			})
 		}
@@ -1092,10 +1095,10 @@ func calculateDiscountedFare(ctx context.Context, tx *sqlx.Tx, userID string, ri
 	var coupon Coupon
 	discount := 0
 	if ride != nil {
-		destLatitude = ride.DestinationLatitude
-		destLongitude = ride.DestinationLongitude
-		pickupLatitude = ride.PickupLatitude
-		pickupLongitude = ride.PickupLongitude
+		destLatitude = ride.DestinationLocation.Lat
+		destLongitude = ride.DestinationLocation.Lon
+		pickupLatitude = ride.PickupLocation.Lat
+		pickupLongitude = ride.PickupLocation.Lon
 
 		// すでにクーポンが紐づいているならそれの割引額を参照
 		if err := tx.GetContext(ctx, &coupon, "SELECT * FROM coupons WHERE used_by = ?", ride.ID); err != nil {
