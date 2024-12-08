@@ -6,11 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"time"
+
+	"github.com/cenkalti/backoff/v4"
 )
 
 var erroredUpstream = errors.New("errored upstream")
+
+var httpClient *http.Client
+
+func init() {
+	dt := http.DefaultTransport.(*http.Transport).Clone()
+	dt.MaxIdleConnsPerHost = 1000
+	httpClient = &http.Client{
+		Transport: dt,
+	}
+
+}
 
 type paymentGatewayPostPaymentRequest struct {
 	Amount int `json:"amount"`
@@ -29,68 +42,60 @@ func requestPaymentGatewayPostPayment(ctx context.Context, paymentGatewayURL str
 
 	// 失敗したらとりあえずリトライ
 	// FIXME: 社内決済マイクロサービスのインフラに異常が発生していて、同時にたくさんリクエストすると変なことになる可能性あり
-	retry := 0
-	for {
-		err := func() error {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, paymentGatewayURL+"/payments", bytes.NewBuffer(b))
-			if err != nil {
-				return err
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+token)
-
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return err
-			}
-			defer res.Body.Close()
-
-			if res.StatusCode != http.StatusNoContent {
-				// エラーが返ってきても成功している場合があるので、社内決済マイクロサービスに問い合わせ
-				getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, paymentGatewayURL+"/payments", bytes.NewBuffer([]byte{}))
-				if err != nil {
-					return err
-				}
-				getReq.Header.Set("Authorization", "Bearer "+token)
-
-				getRes, err := http.DefaultClient.Do(getReq)
-				if err != nil {
-					return err
-				}
-				defer res.Body.Close()
-
-				// GET /payments は障害と関係なく200が返るので、200以外は回復不能なエラーとする
-				if getRes.StatusCode != http.StatusOK {
-					return fmt.Errorf("[GET /payments] unexpected status code (%d)", getRes.StatusCode)
-				}
-				var payments []paymentGatewayGetPaymentsResponseOne
-				if err := json.NewDecoder(getRes.Body).Decode(&payments); err != nil {
-					return err
-				}
-
-				rides, err := retrieveRidesOrderByCreatedAtAsc()
-				if err != nil {
-					return err
-				}
-
-				if len(rides) != len(payments) {
-					return fmt.Errorf("unexpected number of payments: %d != %d. %w", len(rides), len(payments), erroredUpstream)
-				}
-
-				return nil
-			}
-			return nil
-		}()
+	operation := func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, paymentGatewayURL+"/payments", bytes.NewBuffer(b))
 		if err != nil {
-			if retry < 5 {
-				retry++
-				time.Sleep(100 * time.Millisecond)
-				continue
-			} else {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		res, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+
+		if res.StatusCode != http.StatusNoContent {
+			// エラーが返ってきても成功している場合があるので、社内決済マイクロサービスに問い合わせ
+			getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, paymentGatewayURL+"/payments", bytes.NewBuffer([]byte{}))
+			if err != nil {
 				return err
 			}
+			getReq.Header.Set("Authorization", "Bearer "+token)
+
+			getRes, err := httpClient.Do(getReq)
+			if err != nil {
+				return err
+			}
+			defer getRes.Body.Close()
+
+			// GET /payments は障害と関係なく200が返るので、200以外は回復不能なエラーとする
+			if getRes.StatusCode != http.StatusOK {
+				return fmt.Errorf("[GET /payments] unexpected status code (%d)", getRes.StatusCode)
+			}
+			var payments []paymentGatewayGetPaymentsResponseOne
+			if err := json.NewDecoder(getRes.Body).Decode(&payments); err != nil {
+				return err
+			}
+
+			rides, err := retrieveRidesOrderByCreatedAtAsc()
+			if err != nil {
+				return err
+			}
+
+			if len(rides) != len(payments) {
+				return fmt.Errorf("unexpected number of payments: %d != %d. %w", len(rides), len(payments), erroredUpstream)
+			}
+
+			return nil
 		}
-		break
+		return nil
+	}
+
+	if err := backoff.Retry(operation, backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 5)); err != nil {
+		return err
 	}
 
 	return nil
