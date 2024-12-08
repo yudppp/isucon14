@@ -36,6 +36,15 @@ CREATE TABLE chairs
 )
   COMMENT = '椅子情報テーブル';
 
+DROP TABLE IF EXISTS chair_total_distances;
+
+-- テーブル作成
+CREATE TABLE chair_total_distances (
+    chair_id VARCHAR(26) NOT NULL PRIMARY KEY,
+    total_distance INT NOT NULL DEFAULT 0,
+    updated_at DATETIME(6) NOT NULL
+);
+
 DROP TABLE IF EXISTS chair_locations;
 CREATE TABLE chair_locations
 (
