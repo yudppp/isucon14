@@ -25,6 +25,8 @@ type appPostUsersResponse struct {
 	InvitationCode string `json:"invitation_code"`
 }
 
+var paymentGatewayURL string
+
 func appPostUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	req := &appPostUsersRequest{}
@@ -721,10 +723,11 @@ func appPostRideEvaluatation(w http.ResponseWriter, r *http.Request) {
 		Amount: fare,
 	}
 
-	var paymentGatewayURL string
-	if err := tx.GetContext(ctx, &paymentGatewayURL, "SELECT value FROM settings WHERE name = 'payment_gateway_url'"); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	if paymentGatewayURL == "" {
+		if err := tx.GetContext(ctx, &paymentGatewayURL, "SELECT value FROM settings WHERE name = 'payment_gateway_url'"); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	if err := requestPaymentGatewayPostPayment(ctx, paymentGatewayURL, paymentToken.Token, paymentGatewayRequest, func() ([]Ride, error) {
