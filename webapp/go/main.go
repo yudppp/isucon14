@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
+	"github.com/kaz/pprotein/integration/standalone"
 )
 
 var db *sqlx.DB
@@ -22,6 +24,11 @@ var db *sqlx.DB
 func main() {
 	mux := setup()
 	slog.Info("Listening on :8080")
+
+	go func() {
+		standalone.Integrate(":8888")
+	}()
+
 	http.ListenAndServe(":8080", mux)
 }
 
@@ -137,6 +144,12 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	go func() {
+		if _, err := http.Get("http://192.168.0.13:9000/api/group/collect"); err != nil {
+			log.Printf("failed to communicate with pprotein: %v", err)
+		}
+	}()
 
 	writeJSON(w, http.StatusOK, postInitializeResponse{Language: "go"})
 }
