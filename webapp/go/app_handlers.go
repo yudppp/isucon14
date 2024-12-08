@@ -386,6 +386,10 @@ func getLatestRideStatus(ctx context.Context, tx executableGet, rideID string) (
 func getLatestRideStatusByIds(ctx context.Context, tx *sqlx.Tx, rideIDs []string) ([]RideStatus, error) {
 	status := []RideStatus{}
 
+	if len(rideIDs) == 0 {
+		return status, nil
+	}
+
 	query, args, err := sqlx.In(`SELECT rs.ride_id, rs.status
 		FROM ride_statuses rs
 		WHERE rs.created_at = (
