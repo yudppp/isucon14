@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -121,8 +122,31 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	location := &ChairLocation{}
-	if err := tx.GetContext(ctx, location, `SELECT * FROM chair_locations WHERE id = ?`, chairLocationID); err != nil {
+	// 直前の座標を取得して距離を計算
+	var previousLocation ChairLocation
+	err = tx.GetContext(ctx, &previousLocation,
+		`SELECT * FROM chair_locations WHERE chair_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET 1`, // 最新の1つ前を取得
+		chair.ID,
+	)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	distance := 0
+	if err == nil { // 前の位置がある場合のみ距離を計算
+		distance = abs(req.Latitude-previousLocation.Latitude) + abs(req.Longitude-previousLocation.Longitude)
+	}
+
+	// 合計距離を更新
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO chair_total_distances (chair_id, total_distance, updated_at)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+		 total_distance = total_distance + VALUES(total_distance),
+		 updated_at = VALUES(updated_at)`,
+		chair.ID, distance, time.Now(),
+	); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -162,7 +186,7 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, &chairPostCoordinateResponse{
-		RecordedAt: location.CreatedAt.UnixMilli(),
+		RecordedAt: time.Now().UnixMilli(),
 	})
 }
 
