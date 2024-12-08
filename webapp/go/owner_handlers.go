@@ -160,7 +160,7 @@ func sumSales(rides []Ride) int {
 }
 
 func calculateSale(ride Ride) int {
-	return calculateFare(ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
+	return calculateFare(ride.PickupLocation.Lat, ride.PickupLocation.Lon, ride.DestinationLocation.Lat, ride.DestinationLocation.Lon)
 }
 
 type chairWithDetail struct {

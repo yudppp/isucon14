@@ -24,8 +24,7 @@ type ChairModel struct {
 type ChairLocation struct {
 	ID        string    `db:"id"`
 	ChairID   string    `db:"chair_id"`
-	Latitude  int       `db:"latitude"`
-	Longitude int       `db:"longitude"`
+	Location  GeoPoint  `db:"location"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
@@ -48,16 +47,14 @@ type PaymentToken struct {
 }
 
 type Ride struct {
-	ID                   string         `db:"id"`
-	UserID               string         `db:"user_id"`
-	ChairID              sql.NullString `db:"chair_id"`
-	PickupLatitude       int            `db:"pickup_latitude"`
-	PickupLongitude      int            `db:"pickup_longitude"`
-	DestinationLatitude  int            `db:"destination_latitude"`
-	DestinationLongitude int            `db:"destination_longitude"`
-	Evaluation           *int           `db:"evaluation"`
-	CreatedAt            time.Time      `db:"created_at"`
-	UpdatedAt            time.Time      `db:"updated_at"`
+	ID                  string         `db:"id"`
+	UserID              string         `db:"user_id"`
+	ChairID             sql.NullString `db:"chair_id"`
+	PickupLocation      GeoPoint       `db:"pickup_location"`
+	DestinationLocation GeoPoint       `db:"destination_location"`
+	Evaluation          *int           `db:"evaluation"`
+	CreatedAt           time.Time      `db:"created_at"`
+	UpdatedAt           time.Time      `db:"updated_at"`
 }
 
 type RideStatus struct {

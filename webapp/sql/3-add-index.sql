@@ -38,3 +38,8 @@ CREATE INDEX idx_chair_locations_chairid_createdat ON chair_locations(chair_id, 
 -- couponsテーブル
 -- user_id, used_byで未使用クーポン等を絞り込む場合
 CREATE INDEX idx_coupons_userid_usedby ON coupons(user_id, used_by);
+
+ALTER TABLE chair_locations ADD SPATIAL INDEX(location);
+
+ALTER TABLE rides ADD SPATIAL INDEX(pickup_location);
+ALTER TABLE rides ADD SPATIAL INDEX(destination_location);
