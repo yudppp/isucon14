@@ -105,6 +105,15 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 
 	chair := ctx.Value("chair").(*Chair)
 
+	_, err := db.ExecContext(ctx,
+		`INSERT IGNORE INTO chair_total_distances (chair_id, total_distance, updated_at) VALUES (?, 0, NOW())`,
+		chair.ID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	tx, err := db.Beginx()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -112,12 +121,13 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	chairLocationID := ulid.Make().String()
-	if _, err := tx.ExecContext(
-		ctx,
-		`INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (?, ?, ?, ?)`,
-		chairLocationID, chair.ID, req.Latitude, req.Longitude,
-	); err != nil {
+	// `chair_total_distances`をロック
+	var totalDistance int
+	err = tx.QueryRowContext(ctx,
+		`SELECT total_distance FROM chair_total_distances WHERE chair_id = ? FOR UPDATE`,
+		chair.ID,
+	).Scan(&totalDistance)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -125,7 +135,7 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 	// 直前の座標を取得して距離を計算
 	var previousLocation ChairLocation
 	err = tx.GetContext(ctx, &previousLocation,
-		`SELECT * FROM chair_locations WHERE chair_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET 1`, // 最新の1つ前を取得
+		`SELECT * FROM chair_locations WHERE chair_id = ? ORDER BY created_at DESC LIMIT 1`, // 手前の取得
 		chair.ID,
 	)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -133,19 +143,27 @@ func chairPostCoordinate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	distance := 0
-	if err == nil { // 前の位置がある場合のみ距離を計算
-		distance = abs(req.Latitude-previousLocation.Latitude) + abs(req.Longitude-previousLocation.Longitude)
-	}
-
-	// 合計距離を更新
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO chair_total_distances (chair_id, total_distance, updated_at)
+	// 前の位置がある場合のみ距離を計算
+	if err == nil {
+		distance := calculateDistance(previousLocation.Latitude, previousLocation.Longitude, req.Latitude, req.Longitude)
+		// 合計距離を更新
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO chair_total_distances (chair_id, total_distance, updated_at)
 		 VALUES (?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 		 total_distance = total_distance + VALUES(total_distance),
 		 updated_at = VALUES(updated_at)`,
-		chair.ID, distance, time.Now(),
+			chair.ID, distance, time.Now(),
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	chairLocationID := ulid.Make().String()
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (?, ?, ?, ?)`,
+		chairLocationID, chair.ID, req.Latitude, req.Longitude,
 	); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
