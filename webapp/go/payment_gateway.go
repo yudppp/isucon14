@@ -19,7 +19,8 @@ var httpClient *http.Client
 
 func init() {
 	dt := http.DefaultTransport.(*http.Transport).Clone()
-	dt.MaxIdleConnsPerHost = 1000
+	dt.MaxIdleConns = 3000
+	dt.MaxIdleConnsPerHost = 500
 	httpClient = &http.Client{
 		Transport: dt,
 	}
@@ -70,7 +71,6 @@ func requestPaymentGatewayPostPayment(ctx context.Context, paymentGatewayURL str
 			if err != nil {
 				return err
 			}
-			defer getRes.Body.Close()
 
 			// GET /payments は障害と関係なく200が返るので、200以外は回復不能なエラーとする
 			if getRes.StatusCode != http.StatusOK {
@@ -78,8 +78,10 @@ func requestPaymentGatewayPostPayment(ctx context.Context, paymentGatewayURL str
 			}
 			var payments []paymentGatewayGetPaymentsResponseOne
 			if err := json.NewDecoder(getRes.Body).Decode(&payments); err != nil {
+				getRes.Body.Close()
 				return err
 			}
+			getRes.Body.Close()
 
 			rides, err := retrieveRidesOrderByCreatedAtAsc()
 			if err != nil {
