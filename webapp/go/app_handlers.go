@@ -10,6 +10,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/oklog/ulid/v2"
+	"github.com/yudppp/isutools/utils/throttle"
 )
 
 type appPostUsersRequest struct {
@@ -24,6 +25,9 @@ type appPostUsersResponse struct {
 	ID             string `json:"id"`
 	InvitationCode string `json:"invitation_code"`
 }
+
+var paymentGatewayURL string
+var paymentGatewayURLThrottle = throttle.New(time.Second * 30)
 
 func appPostUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -721,11 +725,12 @@ func appPostRideEvaluatation(w http.ResponseWriter, r *http.Request) {
 		Amount: fare,
 	}
 
-	var paymentGatewayURL string
-	if err := tx.GetContext(ctx, &paymentGatewayURL, "SELECT value FROM settings WHERE name = 'payment_gateway_url'"); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
+	paymentGatewayURLThrottle.Do(func() {
+		if err := tx.GetContext(ctx, &paymentGatewayURL, "SELECT value FROM settings WHERE name = 'payment_gateway_url'"); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	})
 
 	if err := requestPaymentGatewayPostPayment(ctx, paymentGatewayURL, paymentToken.Token, paymentGatewayRequest, func() ([]Ride, error) {
 		rides := []Ride{}
