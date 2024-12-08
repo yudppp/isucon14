@@ -291,6 +291,32 @@ func getLatestRideStatus(ctx context.Context, tx executableGet, rideID string) (
 	return status, nil
 }
 
+func getLatestRideStatusByIds(ctx context.Context, tx *sqlx.Tx, rideIDs []string) ([]RideStatus, error) {
+	status := []RideStatus{}
+
+	query, args, err := sqlx.In(`SELECT rs.ride_id, rs.status
+		FROM ride_statuses rs
+		WHERE rs.created_at = (
+			SELECT MAX(sub_rs.created_at)
+			FROM ride_statuses sub_rs
+			WHERE sub_rs.ride_id = rs.ride_id
+		) AND rs.ride_id IN (?)`, rideIDs)
+
+	query = tx.Rebind(query)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return status, err
+	}
+
+	for rows.Next() {
+		var e RideStatus
+		rows.Scan(&e.RideID, &e.Status)
+		status = append(status, e)
+	}
+
+	return status, nil
+}
+
 func appPostRides(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	req := &appPostRidesRequest{}
@@ -895,14 +921,18 @@ func appGetNearbyChairs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		skip := false
+		rideIds := make([]string, 0)
 		for _, ride := range rides {
-			// 過去にライドが存在し、かつ、それが完了していない場合はスキップ
-			status, err := getLatestRideStatus(ctx, tx, ride.ID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if status != "COMPLETED" {
+			rideIds = append(rideIds, ride.ID)
+		}
+		status, err := getLatestRideStatusByIds(ctx, tx, rideIds)
+		// 過去にライドが存在し、かつ、それが完了していない場合はスキップ
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		for _, v := range status {
+			if v.Status != "COMPLETED" {
 				skip = true
 				break
 			}
