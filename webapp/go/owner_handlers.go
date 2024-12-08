@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -109,44 +110,103 @@ func ownerGetSales(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// まずオーナーに紐づくchairsを取得
 	chairs := []Chair{}
 	if err := tx.SelectContext(ctx, &chairs, "SELECT * FROM chairs WHERE owner_id = ?", owner.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	res := ownerGetSalesResponse{
-		TotalSales: 0,
+	if len(chairs) == 0 {
+		// 椅子がない場合は合計0円で返す
+		res := ownerGetSalesResponse{
+			TotalSales: 0,
+			Chairs:     []chairSales{},
+			Models:     []modelSales{},
+		}
+		writeJSON(w, http.StatusOK, res)
+		return
 	}
 
+	// chair_id一覧を抽出
+	chairIDs := make([]string, 0, len(chairs))
+	chairMap := make(map[string]*Chair, len(chairs))
+	for i := range chairs {
+		chairIDs = append(chairIDs, chairs[i].ID)
+		chairMap[chairs[i].ID] = &chairs[i]
+	}
+
+	// ridesをまとめて集計するクエリ
+	// status='COMPLETED'かつ指定期間内のライドが対象
+	// 売上計算: 500 + 100*(abs(pickup_lat - dest_lat) + abs(pickup_lon - dest_lon))
+	query, args, err := sqlx.In(`
+		SELECT
+			r.chair_id,
+			SUM(500 + 100 * (ABS(r.pickup_latitude - r.destination_latitude) + ABS(r.pickup_longitude - r.destination_longitude))) AS total_sales
+		FROM rides r
+		JOIN ride_statuses rs ON r.id = rs.ride_id
+		WHERE r.chair_id IN (?)
+		  AND rs.status = 'COMPLETED'
+		  AND r.updated_at BETWEEN ? AND ? + INTERVAL 999 MICROSECOND
+		GROUP BY r.chair_id
+	`, chairIDs, since, until)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	query = tx.Rebind(query)
+
+	type ChairSalesAggregation struct {
+		ChairID    string `db:"chair_id"`
+		TotalSales int    `db:"total_sales"`
+	}
+
+	var aggResults []ChairSalesAggregation
+	if err := tx.SelectContext(ctx, &aggResults, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 結果をchair_id -> total_salesでまとめる
+	totalSales := 0
 	modelSalesByModel := map[string]int{}
+
+	// 集計結果をmapで引けるようにする
+	salesMap := make(map[string]int, len(aggResults))
+	for _, a := range aggResults {
+		salesMap[a.ChairID] = a.TotalSales
+	}
+
+	resChairs := []chairSales{}
 	for _, chair := range chairs {
-		rides := []Ride{}
-		if err := tx.SelectContext(ctx, &rides, "SELECT rides.* FROM rides JOIN ride_statuses ON rides.id = ride_statuses.ride_id WHERE chair_id = ? AND status = 'COMPLETED' AND updated_at BETWEEN ? AND ? + INTERVAL 999 MICROSECOND", chair.ID, since, until); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-
-		sales := sumSales(rides)
-		res.TotalSales += sales
-
-		res.Chairs = append(res.Chairs, chairSales{
+		sales := salesMap[chair.ID] // なければ0
+		totalSales += sales
+		resChairs = append(resChairs, chairSales{
 			ID:    chair.ID,
 			Name:  chair.Name,
 			Sales: sales,
 		})
-
 		modelSalesByModel[chair.Model] += sales
 	}
 
-	models := []modelSales{}
+	models := make([]modelSales, 0, len(modelSalesByModel))
 	for model, sales := range modelSalesByModel {
 		models = append(models, modelSales{
 			Model: model,
 			Sales: sales,
 		})
 	}
-	res.Models = models
+
+	res := ownerGetSalesResponse{
+		TotalSales: totalSales,
+		Chairs:     resChairs,
+		Models:     models,
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, res)
 }
