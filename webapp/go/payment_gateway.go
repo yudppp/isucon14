@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/cenkalti/backoff/v4"
 )
@@ -94,7 +95,7 @@ func requestPaymentGatewayPostPayment(ctx context.Context, paymentGatewayURL str
 		return nil
 	}
 
-	if err := backoff.Retry(operation, backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 5)); err != nil {
+	if err := backoff.Retry(operation, backoff.WithMaxRetries(backoff.NewExponentialBackOff(backoff.WithInitialInterval(50*time.Millisecond)), 5)); err != nil {
 		return err
 	}
 
