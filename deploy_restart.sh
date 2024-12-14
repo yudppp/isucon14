@@ -2,9 +2,9 @@
 
 # サーバーのリスト
 servers=(
-    "isucon@57.181.47.41" # 1台目
-    # "isucon@18.180.187.241" # 2台目
-    # "isucon@54.95.182.126" # 3台目
+    "isucon@52.196.101.32" # 1台目
+    # "isucon@52.192.241.200" # 2台目
+    # "isucon@54.249.62.103" # 3台目
 )
 
 # デプロイ対象のディレクトリ
@@ -32,6 +32,9 @@ for server in "${servers[@]}"; do
             exit 1
         fi
     done
+    
+
+    scp -r "env.sh" "${server}:env.sh"
 
     echo "Files successfully copied to ${server}"
 

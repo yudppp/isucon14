@@ -19,7 +19,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
-	"github.com/kaz/pprotein/integration/standalone"
 )
 
 var db *sqlx.DB
@@ -29,20 +28,17 @@ func main() {
 	mux := setup()
 	slog.Info("Listening on :8080")
 
-	go func() {
-		standalone.Integrate(":8888")
-	}()
+	// go func() {
+	// 	standalone.Integrate(":8888")
+	// }()
 
 	go func() {
 		for {
 			err := internalGetMatching()
-			if err == nil {
-				continue
-			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Println(err)
 			}
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 
@@ -89,8 +85,11 @@ func setup() http.Handler {
 	}
 	db = _db
 
+	db.SetMaxOpenConns(300)
+	db.SetMaxIdleConns(200)
+
 	mux := chi.NewRouter()
-	mux.Use(middleware.Logger)
+	// mux.Use(middleware.Logger)
 	mux.Use(middleware.Recoverer)
 	mux.HandleFunc("POST /api/initialize", postInitialize)
 
@@ -163,6 +162,8 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// go func() {
+	// 	// 後ろ30秒のデータを撮る
+	// 	time.Sleep(time.Second * 30)
 	// 	if _, err := http.Get("http://localhost:9000/api/group/collect"); err != nil {
 	// 		log.Printf("failed to communicate with pprotein: %v", err)
 	// 	}

@@ -16,6 +16,15 @@ type Chair struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 }
 
+type ChairMeta struct {
+	ID                     string       `db:"id"`
+	Latitude               int          `db:"latitude"`
+	Longitude              int          `db:"longitude"`
+	IsMoving               bool         `db:"is_moving"`
+	TotalDistance          int          `db:"total_distance"`
+	TotalDistanceUpdatedAt sql.NullTime `db:"total_distance_updated_at"`
+}
+
 type ChairWithLocation struct {
 	ID        string `db:"id"`
 	Name      string `db:"name"`

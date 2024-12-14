@@ -136,6 +136,8 @@ func ownerGetSales(w http.ResponseWriter, r *http.Request) {
 		chairMap[chairs[i].ID] = &chairs[i]
 	}
 
+	// TOOD: これもchair_metasとかにもつ？
+
 	// ridesをまとめて集計するクエリ
 	// status='COMPLETED'かつ指定期間内のライドが対象
 	// 売上計算: 500 + 100*(abs(pickup_lat - dest_lat) + abs(pickup_lon - dest_lon))
@@ -236,6 +238,12 @@ type chairWithDetail struct {
 	TotalDistanceUpdatedAt sql.NullTime `db:"total_distance_updated_at"`
 }
 
+type chairDistance struct {
+	ID                     string       `db:"id"`
+	TotalDistance          int          `db:"total_distance"`
+	TotalDistanceUpdatedAt sql.NullTime `db:"total_distance_updated_at"`
+}
+
 type ownerGetChairResponse struct {
 	Chairs []ownerGetChairResponseChair `json:"chairs"`
 }
@@ -255,27 +263,12 @@ func ownerGetChairs(w http.ResponseWriter, r *http.Request) {
 	owner := ctx.Value("owner").(*Owner)
 
 	chairs := []chairWithDetail{}
-	if err := db.SelectContext(ctx, &chairs, `SELECT id,
-       owner_id,
-       name,
-       access_token,
-       model,
-       is_active,
-       created_at,
-       updated_at,
-       IFNULL(total_distance, 0) AS total_distance,
-       total_distance_updated_at
-FROM chairs
-       LEFT JOIN (SELECT chair_id,
-                          SUM(IFNULL(distance, 0)) AS total_distance,
-                          MAX(created_at)          AS total_distance_updated_at
-                   FROM (SELECT chair_id,
-                                created_at,
-                                ABS(latitude - LAG(latitude) OVER (PARTITION BY chair_id ORDER BY created_at)) +
-                                ABS(longitude - LAG(longitude) OVER (PARTITION BY chair_id ORDER BY created_at)) AS distance
-                         FROM chair_locations) tmp
-                   GROUP BY chair_id) distance_table ON distance_table.chair_id = chairs.id
-WHERE owner_id = ?
+	if err := db.SelectContext(ctx, &chairs, `SELECT c.id, c.owner_id, c.name, c.access_token, c.model, c.is_active, c.created_at, c.updated_at,
+           IFNULL(cm.total_distance, 0) as total_distance,
+           cm.total_distance_updated_at
+    FROM chairs c
+    LEFT JOIN chair_metas cm ON c.id = cm.id
+    WHERE c.owner_id = ?
 `, owner.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

@@ -36,6 +36,18 @@ CREATE TABLE chairs
 )
   COMMENT = '椅子情報テーブル';
 
+DROP TABLE IF EXISTS chair_metas;
+CREATE TABLE chair_metas
+(
+  id                     VARCHAR(26) NOT NULL COMMENT '椅子ID',
+  latitude               INTEGER     NOT NULL COMMENT '経度',
+  longitude              INTEGER     NOT NULL COMMENT '緯度',
+  is_moving              TINYINT(1)  NOT NULL COMMENT '配送中かどうか',
+  total_distance         INTEGER     NOT NULL COMMENT '移動距離',
+  total_distance_updated_at DATETIME(6) COMMENT '移動距離計測の最新更新日時',
+  PRIMARY KEY (id)
+) COMMENT = '椅子meta情報テーブル';
+
 DROP TABLE IF EXISTS chair_locations;
 CREATE TABLE chair_locations
 (
@@ -87,6 +99,7 @@ CREATE TABLE rides
   pickup_longitude      INTEGER     NOT NULL COMMENT '配車位置(緯度)',
   destination_latitude  INTEGER     NOT NULL COMMENT '目的地(経度)',
   destination_longitude INTEGER     NOT NULL COMMENT '目的地(緯度)',
+  -- distanceもあらかじめ持つようにする
   evaluation            INTEGER     NULL     COMMENT '評価',
   created_at            DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '要求日時',
   updated_at            DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '状態更新日時',

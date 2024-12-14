@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
+
+	"github.com/catatsuy/cache"
 )
+
+var userIDbyAccessToken = cache.NewReadHeavyCacheExpired[string, string]()
 
 func appAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -16,18 +21,20 @@ func appAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		accessToken := c.Value
-		user := &User{}
-		err = db.GetContext(ctx, user, "SELECT * FROM users WHERE access_token = ?", accessToken)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeError(w, http.StatusUnauthorized, errors.New("invalid access token"))
+		userID, exist := userIDbyAccessToken.Get(accessToken)
+		if !exist {
+			err = db.GetContext(ctx, &userID, "SELECT id FROM users WHERE access_token = ?", accessToken)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					writeError(w, http.StatusUnauthorized, errors.New("invalid access token"))
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
+			userIDbyAccessToken.Set(accessToken, userID, time.Second*60)
 		}
-
-		ctx = context.WithValue(ctx, "user", user)
+		ctx = context.WithValue(ctx, "userID", userID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -56,6 +63,8 @@ func ownerAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+var chairIDbyAccessToken = cache.NewReadHeavyCacheExpired[string, string]()
+
 func chairAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -65,18 +74,20 @@ func chairAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		accessToken := c.Value
-		chair := &Chair{}
-		err = db.GetContext(ctx, chair, "SELECT * FROM chairs WHERE access_token = ?", accessToken)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeError(w, http.StatusUnauthorized, errors.New("invalid access token"))
+		chairID, exist := chairIDbyAccessToken.Get(accessToken)
+		if !exist {
+			err = db.GetContext(ctx, &chairID, "SELECT id FROM chairs WHERE access_token = ?", accessToken)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					writeError(w, http.StatusUnauthorized, errors.New("invalid access token"))
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
+			chairIDbyAccessToken.Set(accessToken, chairID, time.Second*60)
 		}
-
-		ctx = context.WithValue(ctx, "chair", chair)
+		ctx = context.WithValue(ctx, "chairID", chairID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

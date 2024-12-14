@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"slices"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func internalGetMatchingNothing(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +18,6 @@ func internalGetMatchingNothing(w http.ResponseWriter, r *http.Request) {
 // このAPIをインスタンス内から一定間隔で叩かせることで、椅子とライドをマッチングさせる
 func internalGetMatching() error {
 	ctx := context.Background()
-	// MEMO: 一旦最も待たせているリクエストに適当な空いている椅子マッチさせる実装とする。おそらくもっといい方法があるはず…
 	rides := []Ride{}
 	if err := db.SelectContext(ctx, &rides, `SELECT * FROM rides WHERE chair_id IS NULL`); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -23,40 +25,68 @@ func internalGetMatching() error {
 		}
 		return err
 	}
-
+	if len(rides) == 0 {
+		return nil
+	}
 	var chairs []ChairWithLocationAndSpeed
 	query := `SELECT c.id, cl.latitude, cl.longitude, cm.speed
 FROM chairs c
-LEFT JOIN chair_locations cl ON c.id = cl.chair_id
-    AND cl.created_at = (
-        SELECT MAX(cl2.created_at)
-        FROM chair_locations cl2
-        WHERE cl2.chair_id = c.id
-    )
+LEFT JOIN chair_metas cl ON c.id = cl.id
 JOIN chair_models cm ON c.model = cm.name
-WHERE c.is_active = TRUE
-AND NOT EXISTS (
-    SELECT 1
-    FROM rides r
-    JOIN ride_statuses rs ON rs.ride_id = r.id
-    WHERE r.chair_id = c.id
-    GROUP BY r.id
-    HAVING COUNT(rs.chair_sent_at) != 6
-)`
+WHERE c.is_active = TRUE AND cl.is_moving = FALSE;
+`
 	if err := db.SelectContext(ctx, &chairs, query); err != nil {
 		if errors.Is(err, sql.ErrNoRows) || len(chairs) == 0 {
 			return sql.ErrNoRows
 		}
 		return err
 	}
-
-	matchings := selectMatchings(rides, chairs)
-	for _, matching := range matchings {
-		if _, err := db.ExecContext(ctx, "UPDATE rides SET chair_id = ? WHERE id = ?", matching.ChairID, matching.RideID); err != nil {
-			return err
-		}
+	if len(chairs) == 0 {
+		return nil
 	}
-	return nil
+	ridesByRegion := map[RegionID][]Ride{}
+	for _, ride := range rides {
+		regionID := calculateRegionID(ride.PickupLatitude, ride.PickupLongitude)
+		ridesByRegion[regionID] = append(ridesByRegion[regionID], ride)
+	}
+	chairsByRegion := map[RegionID][]ChairWithLocationAndSpeed{}
+	for _, chair := range chairs {
+		regionID := calculateRegionID(chair.Latitude, chair.Longitude)
+		chairsByRegion[regionID] = append(chairsByRegion[regionID], chair)
+	}
+	// regionごとに並列で実行する
+	eg, ctx := errgroup.WithContext(ctx)
+	for _, regionID := range AllRegions {
+		rides, ok := ridesByRegion[regionID]
+		if !ok {
+			continue
+		}
+		chairs, ok := chairsByRegion[regionID]
+		if !ok {
+			continue
+		}
+		eg.Go(func() error {
+			matchings := selectMatchings(rides, chairs)
+			tx, err := db.Begin()
+			if err != nil {
+				return err
+			}
+			for _, matching := range matchings {
+				if _, err := tx.ExecContext(ctx, "UPDATE rides SET chair_id = ? WHERE id = ?", matching.ChairID, matching.RideID); err != nil {
+					return err
+				}
+				_, err = tx.ExecContext(
+					ctx,
+					`UPDATE chair_metas SET is_moving = TRUE WHERE id = ?`,
+					matching.ChairID)
+				if err != nil {
+					return err
+				}
+			}
+			return tx.Commit()
+		})
+	}
+	return eg.Wait()
 }
 
 func selectMatching(ride *Ride, chairs []ChairWithLocationAndSpeed) *ChairWithLocationAndSpeed {
@@ -82,36 +112,84 @@ type ChairMatching struct {
 
 func selectMatchings(rides []Ride, chairs []ChairWithLocationAndSpeed) []ChairMatching {
 	results := []ChairMatching{}
-	matchedChair := map[string]bool{}
-	slices.SortFunc(rides, func(a, b Ride) int {
-		ad := calculateDistance(a.PickupLatitude, a.PickupLongitude, a.DestinationLatitude, a.DestinationLongitude)
-		bd := calculateDistance(b.PickupLatitude, b.PickupLongitude, b.DestinationLatitude, b.DestinationLongitude)
-		return ad - bd
+	matchedChair := make(map[string]bool, len(chairs))
+
+	// 各ライドについて事前に目的地までの距離を計算しておく
+	type rideWithDist struct {
+		Ride         Ride
+		RideDistance int
+	}
+	rideDistList := make([]rideWithDist, len(rides))
+	for i, r := range rides {
+		d := calculateDistance(r.PickupLatitude, r.PickupLongitude, r.DestinationLatitude, r.DestinationLongitude)
+		rideDistList[i] = rideWithDist{Ride: r, RideDistance: d}
+	}
+
+	// rideDistanceでソート
+	slices.SortFunc(rideDistList, func(a, b rideWithDist) int {
+		return a.RideDistance - b.RideDistance
 	})
-	for _, ride := range rides {
-		rideDistance := calculateDistance(ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
-		minTargetTime := float64(0)
-		var minChair *ChairWithLocationAndSpeed
+
+	for _, rw := range rideDistList {
+		ride := rw.Ride
+		rideDistance := rw.RideDistance
+
+		minTargetTime := float64(-1) // 初回比較用に-1をいれておく
+		var minPickUpDistance int
+		var minChairID string
+
 		for _, chair := range chairs {
-			if _, exist := matchedChair[chair.ID]; exist {
+			if matchedChair[chair.ID] {
 				continue
 			}
+
 			// 一番早く着く椅子を選ぶ
-			distance := rideDistance + calculateDistance(ride.PickupLatitude, ride.PickupLongitude, chair.Latitude, chair.Longitude)
+			pickUpDistance := calculateDistance(ride.PickupLatitude, ride.PickupLongitude, chair.Latitude, chair.Longitude)
+			distance := rideDistance + pickUpDistance
 			targetTime := float64(distance) / float64(chair.Speed)
-			if minChair == nil || targetTime < minTargetTime {
+			if minTargetTime < 0 || targetTime < minTargetTime {
 				minTargetTime = targetTime
-				minChair = &chair
+				minChairID = chair.ID
+				minPickUpDistance = pickUpDistance
 			}
 		}
-		if minChair == nil {
+
+		if minChairID == "" {
+			// 空いている椅子がない
 			break
 		}
-		matchedChair[minChair.ID] = true
+		if minPickUpDistance > 100 {
+			// 100以上離れている場合は無理に迎えにいかない
+			break
+		}
+
+		matchedChair[minChairID] = true
+		log.Printf("matched: %v %v %v %v %v", ride.ID, minChairID, ride.UserID, minPickUpDistance, rideDistance)
 		results = append(results, ChairMatching{
 			RideID:  ride.ID,
-			ChairID: minChair.ID,
+			ChairID: minChairID,
 		})
+
+		// 全椅子がマッチしてしまったら抜ける
+		if len(matchedChair) == len(chairs) {
+			break
+		}
 	}
 	return results
+}
+
+type RegionID int
+
+const (
+	RegionA RegionID = iota + 1
+	RegionB
+)
+
+var AllRegions = []RegionID{RegionA, RegionB}
+
+func calculateRegionID(latitude, longitude int) RegionID {
+	if latitude+longitude > 300 {
+		return RegionB
+	}
+	return RegionA
 }
