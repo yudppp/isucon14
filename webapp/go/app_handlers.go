@@ -994,7 +994,7 @@ func appGetNearbyChairs(w http.ResponseWriter, r *http.Request) {
 	err = tx.SelectContext(
 		ctx,
 		&chairs,
-		`SELECT * FROM chairs`,
+		`SELECT * FROM chairs WHERE is_active = 1`,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1003,10 +1003,6 @@ func appGetNearbyChairs(w http.ResponseWriter, r *http.Request) {
 
 	nearbyChairs := []appGetNearbyChairsResponseChair{}
 	for _, chair := range chairs {
-		if !chair.IsActive {
-			continue
-		}
-
 		rides := []*Ride{}
 		if err := tx.SelectContext(ctx, &rides, `SELECT * FROM rides WHERE chair_id = ? ORDER BY created_at DESC`, chair.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -1078,6 +1074,120 @@ func appGetNearbyChairs(w http.ResponseWriter, r *http.Request) {
 		Chairs:      nearbyChairs,
 		RetrievedAt: retrievedAt.UnixMilli(),
 	})
+}
+
+func appGetNearbyChairsWithCache(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	latStr := r.URL.Query().Get("latitude")
+	lonStr := r.URL.Query().Get("longitude")
+	distanceStr := r.URL.Query().Get("distance")
+	if latStr == "" || lonStr == "" {
+		writeError(w, http.StatusBadRequest, errors.New("latitude or longitude is empty"))
+		return
+	}
+
+	lat, err := strconv.Atoi(latStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("latitude is invalid"))
+		return
+	}
+
+	lon, err := strconv.Atoi(lonStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("longitude is invalid"))
+		return
+	}
+
+	distance := 50
+	if distanceStr != "" {
+		distance, err = strconv.Atoi(distanceStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("distance is invalid"))
+			return
+		}
+	}
+
+	coordinate := Coordinate{Latitude: lat, Longitude: lon}
+
+	nearbyChairs := []appGetNearbyChairsResponseChair{}
+	chairs, err := getChairsWithLocation(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	for _, chair := range chairs {
+		if calculateDistance(coordinate.Latitude, coordinate.Longitude, chair.Latitude, chair.Longitude) <= distance {
+			nearbyChairs = append(nearbyChairs, appGetNearbyChairsResponseChair{
+				ID:    chair.ID,
+				Name:  chair.Name,
+				Model: chair.Model,
+				CurrentCoordinate: Coordinate{
+					Latitude:  chair.Latitude,
+					Longitude: chair.Longitude,
+				},
+			})
+		}
+	}
+
+	retrievedAt := &time.Time{}
+	err = db.GetContext(
+		ctx,
+		retrievedAt,
+		`SELECT CURRENT_TIMESTAMP(6)`,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, &appGetNearbyChairsResponse{
+		Chairs:      nearbyChairs,
+		RetrievedAt: retrievedAt.UnixMilli(),
+	})
+}
+
+var chairCacheThrottle = throttle.New(time.Microsecond * 2500)
+var chairCache = []ChairWithLocation{}
+
+func getChairsWithLocationWithCache(ctx context.Context) ([]ChairWithLocation, error) {
+	chairCacheThrottle.Do(func() {
+		chairs, err := getChairsWithLocation(ctx)
+		if err != nil {
+			return
+		}
+		chairCache = chairs
+	})
+	return chairCache, nil
+}
+func getChairsWithLocation(ctx context.Context) ([]ChairWithLocation, error) {
+	query := `SELECT c.id, c.name, c.model, cl.latitude, cl.longitude
+FROM chairs c
+LEFT JOIN chair_locations cl ON c.id = cl.chair_id
+    AND cl.created_at = (
+        SELECT MAX(cl2.created_at)
+        FROM chair_locations cl2
+        WHERE cl2.chair_id = c.id
+    )
+WHERE c.is_active = TRUE
+AND NOT EXISTS (
+    SELECT 1
+    FROM rides r
+    JOIN ride_statuses rs ON rs.ride_id = r.id
+    WHERE r.chair_id = c.id
+    GROUP BY r.id
+    HAVING COUNT(rs.chair_sent_at) != 6
+)`
+	chairs := []ChairWithLocation{}
+	err := db.SelectContext(
+		ctx,
+		&chairs,
+		query,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return chairs, nil
 }
 
 func calculateFare(pickupLatitude, pickupLongitude, destLatitude, destLongitude int) int {
