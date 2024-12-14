@@ -2,7 +2,9 @@ package main
 
 import (
 	crand "crypto/rand"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,11 +25,25 @@ import (
 var db *sqlx.DB
 
 func main() {
+
 	mux := setup()
 	slog.Info("Listening on :8080")
 
 	go func() {
 		standalone.Integrate(":8888")
+	}()
+
+	go func() {
+		for {
+			err := internalGetMatching()
+			if err == nil {
+				continue
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				log.Println(err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}()
 
 	http.ListenAndServe(":8080", mux)
@@ -113,7 +130,7 @@ func setup() http.Handler {
 
 	// internal handlers
 	{
-		mux.HandleFunc("GET /api/internal/matching", internalGetMatching)
+		mux.HandleFunc("GET /api/internal/matching", internalGetMatchingNothing)
 	}
 
 	return mux
