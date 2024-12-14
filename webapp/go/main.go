@@ -42,7 +42,7 @@ func main() {
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Println(err)
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 		}
 	}()
 
@@ -162,11 +162,11 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		if _, err := http.Get("http://192.168.0.13:9000/api/group/collect"); err != nil {
-			log.Printf("failed to communicate with pprotein: %v", err)
-		}
-	}()
+	// go func() {
+	// 	if _, err := http.Get("http://localhost:9000/api/group/collect"); err != nil {
+	// 		log.Printf("failed to communicate with pprotein: %v", err)
+	// 	}
+	// }()
 
 	writeJSON(w, http.StatusOK, postInitializeResponse{Language: "go"})
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 )
 
 func internalGetMatchingNothing(w http.ResponseWriter, r *http.Request) {
@@ -15,8 +16,8 @@ func internalGetMatchingNothing(w http.ResponseWriter, r *http.Request) {
 func internalGetMatching() error {
 	ctx := context.Background()
 	// MEMO: 一旦最も待たせているリクエストに適当な空いている椅子マッチさせる実装とする。おそらくもっといい方法があるはず…
-	ride := &Ride{}
-	if err := db.GetContext(ctx, ride, `SELECT * FROM rides WHERE chair_id IS NULL ORDER BY created_at LIMIT 1`); err != nil {
+	rides := []Ride{}
+	if err := db.SelectContext(ctx, &rides, `SELECT * FROM rides WHERE chair_id IS NULL`); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sql.ErrNoRows
 		}
@@ -49,13 +50,11 @@ AND NOT EXISTS (
 		return err
 	}
 
-	matched := selectMatching(ride, chairs)
-	if matched == nil {
-		return sql.ErrNoRows
-	}
-
-	if _, err := db.ExecContext(ctx, "UPDATE rides SET chair_id = ? WHERE id = ?", matched.ID, ride.ID); err != nil {
-		return err
+	matchings := selectMatchings(rides, chairs)
+	for _, matching := range matchings {
+		if _, err := db.ExecContext(ctx, "UPDATE rides SET chair_id = ? WHERE id = ?", matching.ChairID, matching.RideID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -74,4 +73,45 @@ func selectMatching(ride *Ride, chairs []ChairWithLocationAndSpeed) *ChairWithLo
 		}
 	}
 	return minChair
+}
+
+type ChairMatching struct {
+	RideID  string
+	ChairID string
+}
+
+func selectMatchings(rides []Ride, chairs []ChairWithLocationAndSpeed) []ChairMatching {
+	results := []ChairMatching{}
+	matchedChair := map[string]bool{}
+	slices.SortFunc(rides, func(a, b Ride) int {
+		ad := calculateDistance(a.PickupLatitude, a.PickupLongitude, a.DestinationLatitude, a.DestinationLongitude)
+		bd := calculateDistance(b.PickupLatitude, b.PickupLongitude, b.DestinationLatitude, b.DestinationLongitude)
+		return ad - bd
+	})
+	for _, ride := range rides {
+		rideDistance := calculateDistance(ride.PickupLatitude, ride.PickupLongitude, ride.DestinationLatitude, ride.DestinationLongitude)
+		minTargetTime := float64(0)
+		var minChair *ChairWithLocationAndSpeed
+		for _, chair := range chairs {
+			if _, exist := matchedChair[chair.ID]; exist {
+				continue
+			}
+			// 一番早く着く椅子を選ぶ
+			distance := rideDistance + calculateDistance(ride.PickupLatitude, ride.PickupLongitude, chair.Latitude, chair.Longitude)
+			targetTime := float64(distance) / float64(chair.Speed)
+			if minChair == nil || targetTime < minTargetTime {
+				minTargetTime = targetTime
+				minChair = &chair
+			}
+		}
+		if minChair == nil {
+			break
+		}
+		matchedChair[minChair.ID] = true
+		results = append(results, ChairMatching{
+			RideID:  ride.ID,
+			ChairID: minChair.ID,
+		})
+	}
+	return results
 }
